@@ -1,0 +1,275 @@
+---
+title: 'Data 607: Project 1'
+author: "Wendy Romero"
+date: "2025-09-21"
+output: 
+  html_document: 
+    theme: cerulean
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+```
+
+## Introduction
+
+For this project, we will be reading in chess tournament results from a .TXT file. We will be cleaning messy data, saving it to a data frame and finding the average pre-rating of opponents for each player. We will then export our clean data frame as a .CSV file. For each player the CSV file will include  the following information:
+
+The Player’s Name, Player’s State, Total Number of Points, Player’s Pre-Rating, and Average Pre Chess Rating of Opponents.
+
+We will use the following libraries: 
+
+-  The **tidyverse** library 
+
+
+First let's read in our data from Github and use the readLines() function. This function will read everything in our .txt file into one character column, but no worry, because we will clean and data in the column and eventually save it to a data frame.
+
+```{r readLines}
+url <-("https://raw.githubusercontent.com/WendyR20/DATA-607-Project-1/refs/heads/main/tournamentinfo.txt")
+lines <- readLines(url)
+head(lines,12)
+```
+
+Let's also get a glimpse of the lines column
+
+```{r glimpse}
+glimpse(lines)
+```
+
+## Cleaning the Data
+
+Before we extract the information we need an save it as a data frame we need to first clean the data a bit.
+
+Let's start with getting rid of the dashes that litter the data:
+
+```{r dashes}
+#replacing every dash with emptiness
+lines <- gsub("-", "", lines)
+
+#deleting every empty line
+lines <- lines[nzchar(lines)]
+
+```
+
+Now as we've seen the data has a header for our purposes we need to delete it.
+
+```{r header}
+#deleting the header
+lines <- lines[-c(1,2)]
+```
+
+Since each player's information is split into two lines, let's create blocks to house each player's two lines of data.
+
+```{r blocks}
+#let's group every two lines 
+blocks <- split(lines, ceiling(seq_along(lines)/2))
+
+head(blocks)
+```
+
+
+Now we can create a function can extract player information from the split blocks. 
+
+```{r extract function}
+
+player_info <- function(block) {
+  
+  player_line1 <- block[1]
+  player_line2 <- block[2]
+  
+  
+  #extracting each round result and the opponent number
+  rounds <- str_extract_all(player_line1, "[WLDB]\\s*\\d+")[[1]] 
+  
+  #first time using a tibble 
+  tibble::tibble(
+    
+    Player_Number = str_extract(player_line1, "^\\s*\\d+"), #extracting the number at the new line
+    State = str_extract(player_line2,"^\\s*\\w+" ), # extracting the first word at the new line
+    Name = str_trim(str_extract(player_line1, "(?<=\\| ).*?(?=\\|)")),
+    Total_Points = str_extract(player_line1, "\\d+\\.\\d"  ), 
+    Pre_Rating = str_match(player_line2, "R:\\s+(\\d+)")[,2],
+    
+    #giving each round result it's own column
+    !!!setNames(as.list(rounds), paste0("Round", seq_along(rounds))),
+  )
+  
+}
+```
+
+Let's bind all the player informatin together.
+
+```{r bind}
+# bind all players
+player_data <- bind_rows(lapply(blocks,player_info))
+
+head(player_data)
+```
+
+Let's convert the tibble to a data frame because it's more familiar. Though, it's great to try new things!
+
+```{r to data frame}
+Chess_Players <- as.data.frame(player_data)
+
+```
+
+For the purpose of this project we will not be including the results for each round (i.e. whether the player won, loss, etc.) so let's extract the numbers from the rounds columns.
+
+```{r numbers only in Rounds }
+
+Chess_Players <- Chess_Players %>%
+  mutate(across(c(Round1, Round2, Round3, Round4, Round5, Round6,Round7),
+                ~ as.numeric(str_remove_all(., "[^0-9]"))))
+
+```
+
+
+Now let's check our data.
+
+```{r head and glimpse }
+#Let's take a look at our data so far
+head(Chess_Players)
+glimpse(Chess_Players)
+
+```
+
+## Finding the Average of each Player's Opponent's Pre-ratings
+
+We first need to change the pre-rating column to an integer since it will do calculations with this column later on.
+
+```{r to integer}
+
+Chess_Players$Pre_Rating <- as.integer(Chess_Players$Pre_Rating)
+
+```
+
+Now let's replace any null values in the Round Columns with zero.
+
+```{r null }
+Chess_Players <- Chess_Players %>%
+  mutate(across(c(Round1, Round2, Round3, Round4, Round5, Round6,Round7),
+                ~replace_na(., 0)))
+
+glimpse(Chess_Players)
+
+```
+
+Let's pivot the data frame so each round has it's own row instead of it's own column for each player.
+
+```{r pivot}
+
+Chess_Players_Pivot <- Chess_Players %>%
+  pivot_longer(cols = starts_with("Round"),
+               names_to = "Round_Column",
+               values_to = "Opp_Number") %>%
+  filter(!is.na(Opp_Number))
+
+glimpse(Chess_Players_Pivot)
+
+```
+
+We will need to join the original Chess_Players data frame to the Chess_Players_Pivot2 data frame. Thus, the player_number column must be a double type in both data frames. We want to join these two tables so our Opponent's pre-ratings have their own column in our Chess_Players_Pivot2 data frame.
+
+```{r double and join}
+
+Chess_Players$Player_Number <- as.double(Chess_Players$Player_Number)
+
+Chess_Players_Pivot2 <- Chess_Players_Pivot %>%
+  left_join(
+    Chess_Players %>% 
+      select(Player_Number, Pre_Rating),
+    by = c("Opp_Number" = "Player_Number")
+  ) 
+```
+
+Since we joined the Chess_Players data frame to the Chess_Players_Pivot2 data frame we have two pre-ratings columns. Let's rename both so we can tell them apart for the sake of our calculations.
+
+```{r rename pre-ratings}
+names(Chess_Players_Pivot2)
+
+ 
+Chess_Players_Pivot2 <- Chess_Players_Pivot2 %>%
+  rename(Player_PreRating = Pre_Rating.x,
+         Opp_PreRating = Pre_Rating.y)
+```
+
+Now, finally we can find each player's opponents average pre-rating.
+
+```{r average pre-ratings}
+Chess_Players_Avg <- Chess_Players_Pivot2 %>%
+  group_by(Player_Number) %>%
+  summarise(
+    Avg_Opp_PreRating = mean(Opp_PreRating, na.rm = TRUE)
+  )
+
+head(Chess_Players_Avg)
+
+```
+
+Let's round our Opponent Pre Rating Column.
+
+```{r rounding}
+#Let's round our Opp Pre Rating Column
+Chess_Players_Avg$Avg_Opp_PreRating <- round(Chess_Players_Avg$Avg_Opp_PreRating,
+                                             digits = 0)
+```
+
+## Join Our Opponent Pre-Ratings Column to our original Data Frame
+
+We will need to join the original Chess_Players data frame to the Chess_Players_Avg data frame where our average of opponents pre-ratings for each player exists. Thus, the player_number column must be a double type in both data frames.
+
+Let's first take a look at our two data frames.
+
+```{r glimpse of our two data frames }
+glimpse(Chess_Players)
+glimpse(Chess_Players_Avg)
+
+
+```
+
+Before we can join the two data frames we need to change the Player Number column type in the Chess Players Avg data frame.
+```{r join}
+
+Chess_Players_Avg$Player_Number <- as.double(Chess_Players_Avg$Player_Number)
+
+Chess_Players <- Chess_Players %>%
+  left_join(Chess_Players_Avg, by = "Player_Number")
+
+```
+
+
+Let's take another look at our Chess_Players data frame to ensure our join worked:
+```{r look }
+glimpse(Chess_Players)
+head(Chess_Players)
+
+
+```
+
+Okay, great now we can move on!
+
+## Subset and Export to CSV
+
+Before we export our data to csv format let's create a subset data frame that does not include the rounds.
+
+```{r subset }
+
+Chess_Player_Final <- Chess_Players %>%
+  select(-Player_Number,-Round1, -Round2, -Round3, -Round4, -Round5, -Round6,-Round7)
+
+```
+
+Now we can export our data frame and save it as a csv on our local machine.
+
+```{r csv}
+
+write.csv(Chess_Player_Final, "Chess_Player.csv", row.names = FALSE)
+
+
+```
+
+And we are finito!
+
+
